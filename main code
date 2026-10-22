@@ -1,0 +1,63 @@
+"""
+Telegram polling client for SasteraBot.
+Set TELEGRAM_BOT_TOKEN in .env after creating a bot with @BotFather.
+"""
+import os
+import requests
+from dotenv import load_dotenv
+
+load_dotenv()
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+API = f"https://api.telegram.org/bot{TOKEN}"
+
+# Per-chat state is kept in memory while the Telegram process is running.
+# For production, use Redis/database so state survives restarts.
+TELEGRAM_SESSIONS = {}
+
+def ask_backend(text, chat_id):
+    from app import response_for
+    state = TELEGRAM_SESSIONS.setdefault(str(chat_id), {})
+    return response_for(text, state=state)
+
+def main():
+    if not TOKEN:
+        raise SystemExit("TELEGRAM_BOT_TOKEN belum ditetapkan dalam fail .env.")
+    offset = None
+    print("SasteraBot Telegram sedang berjalan. Tekan Ctrl+C untuk berhenti.")
+    while True:
+        try:
+            params = {"timeout": 30}
+            if offset is not None:
+                params["offset"] = offset
+            result = requests.get(f"{API}/getUpdates", params=params, timeout=35)
+            result.raise_for_status()
+            payload = result.json()
+            if not payload.get("ok"):
+                print("Telegram API returned an error:", payload)
+                continue
+            for update in payload.get("result", []):
+                offset = update["update_id"] + 1
+                message = update.get("message") or update.get("edited_message")
+                if not message or not message.get("text"):
+                    continue
+                chat_id = message["chat"]["id"]
+                text = message["text"].strip()
+                try:
+                    reply = ask_backend(text, chat_id)
+                except Exception as exc:
+                    print("Message handling error:", exc)
+                    reply = "Maaf, berlaku ralat. Sila cuba lagi atau hubungi pensyarah."
+                # Telegram Markdown parsing is deliberately omitted for robustness.
+                clean_reply = reply.replace("**", "").replace("`", "")
+                sent = requests.post(f"{API}/sendMessage",
+                                     json={"chat_id": chat_id, "text": clean_reply},
+                                     timeout=15)
+                sent.raise_for_status()
+        except KeyboardInterrupt:
+            print("\nBot dihentikan.")
+            break
+        except requests.RequestException as exc:
+            print("Ralat rangkaian Telegram:", exc)
+
+if __name__ == "__main__":
+    main()
